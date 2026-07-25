@@ -1,0 +1,9 @@
+# Finalized STGCN + Time2Vec temporal model — runtime dependencies.
+# torch is built for CUDA; install the build matching your system from pytorch.org.
+torch>=2.1
+numpy
+pandas
+scipy
+scikit-learn
+tqdm
+plotly        # only needed for make_dashboard.py
