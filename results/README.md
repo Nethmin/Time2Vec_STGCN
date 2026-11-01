@@ -23,4 +23,24 @@ All final runs use PeMSD7-M, `d_emb=16`, MSE loss, and seeds `42,1,7,13,21`. The
 
 The README's headline results are rounded aggregates of these tables. The cleaned code has the same final architecture and hyperparameters, but its random-number sequence differs from the original notebook procedure. These files should therefore be described as historical research results, not as a guarantee that every new training run yields an identical metric row.
 
-The saved dashboard uses seed 7 at each horizon. Its single-seed metrics are separate from the five-seed averages in these tables.
+## Reproducing the historical runs
+
+The existing research loader uses pandas' default CSV-header handling. The first numeric row of `vel.csv` is consumed as column names, leaving 12,671 observations and chronological split lengths of 8,871/1,900/1,900. Calendar indices begin at zero for the first retained row, giving a five-minute offset relative to the raw-file calendar assumption. The window builder also omits the last otherwise valid window. These behaviors remain in the code to preserve the historical pipeline; correcting them requires a new experiment.
+
+The cleaned implementation constructs the reparameterized Time2Vec modules directly. The original notebooks first constructed ordinary Time2Vec modules and then replaced them. They also evaluated the shuffled training loader once more per epoch. These differences consume random numbers differently, so an identical seed does not guarantee identical historical weights or a matching metric row. Dependencies are not pinned to an exact environment lock.
+
+The thesis's static prediction figure was produced by the original prediction exporter using `header=None`, a training split of 8,872 rows, and the corresponding scaler and calendar indices. That export path differs from the headline evaluation pipeline. Treat the figure as a historical illustration, not as the source of the table's metrics.
+
+The thesis and presentation compare the final model with published STGCN results. Those reference numbers are not a baseline rerun with the same final batch size, optimizer configuration, and seed set, so they do not establish a controlled measurement of the encoding's effect.
+
+Only PeMSD7-M was evaluated in the final thesis. Calendar settings for METR-LA and PeMS-BAY remain available in the code, but their datasets are not bundled.
+
+## README figures
+
+The figures are extracted directly from the author's thesis and presentation. They have not been regenerated from new training runs.
+
+| Figure | Source |
+|---|---|
+| [Model architecture](../assets/figures/architecture.png) | Research presentation, slide 9; original embedded PNG. |
+| [Learned Time2Vec components](../assets/figures/learned_time2vec.png) | Thesis, PDF page 31 (printed page 30); original embedded PNG showing daily and weekly components. |
+| [Prediction examples](../assets/figures/predictions.png) | Thesis, PDF page 30 (printed page 29); original embedded PNG showing network-average speeds. |

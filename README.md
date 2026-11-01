@@ -1,39 +1,81 @@
-﻿# STGCN + Time2Vec for Traffic Forecasting
+# STGCN + Time2Vec for Traffic Forecasting
 
-Final-model implementation of the HND Data Science research project **A Time2Vec Temporal Encoding for Multi-Horizon Traffic Forecasting with Spatio-Temporal Graph Neural Networks**.
+This is my HND Data Science research project: **A Time2Vec Temporal Encoding for Multi-Horizon Traffic Forecasting with Spatio-Temporal Graph Neural Networks**.
 
-The model adds explicit daily and weekday calendar context to a Spatio-Temporal Graph Convolutional Network (STGCN). Two continuous Time2Vec streams start at integer harmonics and learn positive frequency adjustments during training. The encoding is concatenated with the speed input before the STGCN backbone.
+I explored how daily and weekly time information could help an STGCN predict traffic speeds. The final model takes the previous **60 minutes** of speeds from **228 road sensors** and predicts the speed at each sensor **15, 30, or 45 minutes ahead**.
 
-This repository includes training code, the PeMSD7-M dataset, historical result tables, and an offline prediction dashboard. **Pretrained checkpoints are not included.** Training creates local weights for evaluation and for rebuilding the dashboard.
+This repository contains the final model, training code, PeMSD7-M data, and recorded results. **Pretrained checkpoints are not included.**
 
-## Model
+## Why add Time2Vec?
 
-- Fixed distance-based road graph, with a scaled symmetric normalized Laplacian.
-- Two ST-Conv blocks with Chebyshev graph convolution (`Ks=3`), temporal convolutions (`Kt=3`), GLU, layer normalization, and dropout.
-- Two Time2Vec streams: daily and weekly. Here a week means the five recorded weekdays.
-- Each stream produces one linear trend and five sine components (`d_t2v=6`). Their 12 features are projected to 16 channels (`d_emb=16`) and concatenated with speed, giving 17 input channels.
-- Frequencies follow `omega = omega_base * exp(log_scale)`, starting at harmonics 1 through 5 cycles per period. Frequencies and phases are learned.
-- An input of 12 five-minute observations predicts one future speed per sensor. Separate models handle 15-, 30-, and 45-minute horizons.
+The STGCN backbone learns how traffic changes over a short observation window and how connected roads affect one another. That window alone does not explicitly tell the model whether it is looking at a weekday morning, an evening rush hour, or a quiet period.
 
-The temporal encoding module contains 232 parameters. The complete model contains 262,761 registered parameters; the full parameter increase over the backbone-only model is larger than the encoding module because concatenation also widens the first convolution.
+My contribution is a pair of continuous Time2Vec encodings for the time of day and position within the weekday week. Their frequencies start at daily and weekly harmonics, then adjust during training. These features are added to the speed input before it reaches the STGCN.
 
-## Reported research results
+## Model architecture
 
-Historical test results on PeMSD7-M, reported as mean +/- sample standard deviation across seeds **42, 1, 7, 13, 21**:
+![Final STGCN and Time2Vec architecture, showing the speed and calendar inputs, two ST-Conv blocks, and prediction output](assets/figures/architecture.png)
 
-| Horizon | MAE (mph) | RMSE (mph) | MAPE (%) |
+*Architecture diagram from my research presentation. Intermediate shapes show channels, time steps, and sensors, with the batch dimension omitted.*
+
+1. **Speed input:** 12 observations at five-minute intervals, with one speed channel per sensor.
+2. **Calendar input:** daily and weekly Time2Vec streams, each producing six features: one linear trend and five sinusoids. Their 12 combined features are projected to 16 channels and broadcast across all sensors.
+3. **Concatenation:** the speed channel and 16 time channels form an input of shape `[batch, 17, 12, 228]`.
+4. **Two ST-Conv blocks:** each combines temporal GLU convolutions with Chebyshev graph convolution, followed by layer normalization and dropout. The graph is fixed and derived from sensor distances. With `Ks=3`, each graph convolution covers the sensor itself and its one- and two-hop neighbors.
+5. **Output block:** reduces the remaining time dimension and predicts one future speed per sensor. A separate model is trained for each forecast horizon.
+
+| Stage | Output shape, excluding batch |
+|---|---|
+| Speed + projected time features | `17 x 12 x 228` |
+| ST-Conv block 1 | `64 x 8 x 228` |
+| ST-Conv block 2 | `64 x 4 x 228` |
+| Output block | `1 x 1 x 228` |
+
+### The temporal encoding
+
+For a normalized time value $\tau$, each stream produces:
+
+$$
+\operatorname{Time2Vec}(\tau) = [w_0\tau + b_0,\; \sin(\omega_1\tau + \phi_1),\; \ldots,\; \sin(\omega_5\tau + \phi_5)]
+$$
+
+The daily input is `tod / 288`. The weekly input is `(dow * 288 + tod) / (5 * 288)`, because PeMSD7-M records weekdays only. Frequencies are parameterized as:
+
+$$
+\omega_k = 2\pi k\,\exp(s_k), \qquad k = 1,\ldots,5
+$$
+
+The learned log scales $s_k$ and phases $\phi_k$ start at zero. This starts each stream at 1 through 5 cycles per period while allowing positive frequency adjustments.
+
+The encoding module has **232 parameters**, and the full model has **262,761**. The full increase over the backbone-only model is **7,400 parameters**, since concatenating the time features also widens the first convolution.
+
+![Mean traffic speed over ten recorded days, with learned daily and weekly Time2Vec components below](assets/figures/learned_time2vec.png)
+
+*An illustration from the thesis: traffic speeds above, followed by the learned daily and weekly components. The weekly axis spans five weekdays, or 120 hours.*
+
+## Dataset and results
+
+The final experiments use **PeMSD7-M**, with 228 sensors in California's District 7, five-minute speed readings in mph, and 44 weekdays from May-June 2012. Data is split chronologically into **70% training, 15% validation, and 15% test**. Each sensor is standardized using training data only.
+
+The table reports historical test results as **mean +/- sample standard deviation** over seeds `42, 1, 7, 13, 21`.
+
+| Forecast horizon | MAE (mph) | RMSE (mph) | MAPE (%) |
 |---|---:|---:|---:|
 | 15 minutes | 2.207 +/- 0.018 | 3.951 +/- 0.012 | 5.23 +/- 0.02 |
 | 30 minutes | 2.845 +/- 0.048 | 5.233 +/- 0.024 | 7.16 +/- 0.09 |
 | 45 minutes | 3.216 +/- 0.115 | 5.911 +/- 0.104 | 8.18 +/- 0.27 |
 
-The capacity `d_t2v=6` was selected by the lowest mean validation loss across seeds in a sweep over `{4,6,8}`. Each run uses its best-validation checkpoint for testing. The small capacity differences overlap with seed variation.
+I tested Time2Vec dimensions `4`, `6`, and `8` at the 15-minute horizon. The selected dimension, `d_t2v=6`, had the lowest mean best-validation loss across seeds. Each run was tested using its best-validation checkpoint.
 
-The original per-run and summary CSVs are in [results/](results/README.md). These are recorded research results, not newly executed benchmarks of this cleaned implementation. The dashboard shows a single seed and is separate from the five-seed averages above.
+![Historical actual and predicted network-average speeds at the 15-, 30-, and 45-minute horizons](assets/figures/predictions.png)
 
-## Setup
+*Prediction examples from the thesis, averaged across sensors. These are historical single-run illustrations, separate from the five-seed averages in the table.*
 
-Use Python 3.12, the version used during development, and create a fresh virtual environment. Run commands from the directory containing `main.py`.
+The original CSVs and [reproduction notes](results/README.md#reproducing-the-historical-runs) are in [results/](results/README.md). These are recorded research results, not new benchmarks of the cleaned code.
+
+## Run the project
+
+The project was developed with Python 3.12 and PyTorch. Run commands from the directory containing `main.py`.
 
 ```powershell
 python -m venv .venv
@@ -41,11 +83,11 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-On Linux or macOS, activate with `source .venv/bin/activate`. PyTorch uses CUDA when available and otherwise runs on CPU. Install a PyTorch build appropriate for your hardware; see the [official installation guide](https://pytorch.org/get-started/locally/).
+On Linux or macOS, activate the environment with `source .venv/bin/activate`. PyTorch uses CUDA when available and otherwise runs on CPU. For a GPU setup, choose the appropriate build from the [PyTorch installation guide](https://pytorch.org/get-started/locally/).
 
-## Train and evaluate
+### Train and evaluate
 
-Train one model for each horizon, using distinct output names:
+Train one model for each horizon:
 
 ```bash
 python main.py --seed 42 --n_pred 3 --save_path h15_s42
@@ -53,85 +95,59 @@ python main.py --seed 42 --n_pred 6 --save_path h30_s42
 python main.py --seed 42 --n_pred 9 --save_path h45_s42
 ```
 
-Each command saves a local `.pt` checkpoint and a `*_history.csv`, reloads the checkpoint with the best validation loss, and prints test metrics. MAPE is printed as a fraction; multiply by 100 to express it as a percentage. Weights and training histories are excluded from Git.
+Each command saves a local `.pt` checkpoint and `*_history.csv`, reloads the checkpoint with the lowest validation loss, and prints test metrics. The printed MAPE is a fraction: `0.0523` means `5.23%`. Checkpoints and generated training histories are ignored by Git.
 
-The defaults implement this training recipe:
-
-| Setting | Value |
+| Training setting | Default |
 |---|---|
-| Dataset / split | PeMSD7-M; chronological train/validation/test 70/15/15 |
-| Scaling | Per-sensor StandardScaler fitted on training data only |
-| Encoding | `d_t2v=6`, `d_emb=16`; daily and five-weekday streams |
+| Input window / temporal kernel / Chebyshev terms | 12 / 3 / 3 |
+| Time2Vec dimension / projected width | 6 per stream / 16 |
 | Optimizer / loss | AdamW / MSE in standardized space |
 | Learning rate / weight decay | 0.004 / 0.001 |
-| Frequency parameters | 10x base learning rate; no weight decay |
-| Phase parameters | Base learning rate; no weight decay |
-| Schedule | Two-epoch warmup followed by cosine annealing (`t_max=60`) |
-| Batch / dropout / gradient clipping | 256 / 0.5 / norm 5 |
-| Maximum epochs / early stopping | 100 / patience 10 |
+| Frequency parameters | 10x learning rate, no weight decay |
+| Phase parameters | Base learning rate, no weight decay |
+| Schedule | Two-epoch warmup, then cosine annealing (`t_max=60`) |
+| Batch size / dropout / gradient clipping | 256 / 0.5 / norm 5 |
+| Maximum epochs / early-stopping patience | 100 / 10 |
 
-To study capacity or train the backbone-only baseline:
+For a backbone-only run, use `--no-temporal_emb`. To repeat a capacity experiment, change `--d_t2v`:
 
 ```bash
-python main.py --d_t2v 4 --save_path capacity4_s42
-python main.py --d_t2v 8 --save_path capacity8_s42
 python main.py --no-temporal_emb --save_path baseline_s42
+python main.py --d_t2v 4 --save_path capacity4_s42
 ```
 
-## View the prediction dashboard
-
-Open [dashboard/predictions_dashboard.html](dashboard/predictions_dashboard.html) in a browser. The saved HTML works offline without Python or checkpoints. It contains predictions from the historical seed-7 runs, with controls for all 228 sensors and the three forecast horizons. It is a demonstration, not the seed-averaged result table.
-
-After training the three default-capacity models above, rebuild the dashboard using your local weights:
-
-```bash
-python make_dashboard.py --ckpt15 h15_s42.pt --ckpt30 h30_s42.pt --ckpt45 h45_s42.pt --max_hours 72
-```
-
-The generated file is `runs/predictions_dashboard.html`. Omit `--max_hours` to include the entire test period, or use `--out` to choose another destination. All three checkpoint arguments are required; the builder has no dependency on the original experiment folders.
-
-## Inspect learned temporal features
+### Inspect Time2Vec
 
 ```bash
 python inspect_temporal.py --ckpt h15_s42.pt
 ```
 
-This prints learned frequencies, phases, and trend coefficients, and writes CSVs to `runs/temporal_encoding/`. The input must be a model trained with temporal encoding enabled. Use `--outdir` to change the output location.
+This prints learned frequencies, phases, and trend coefficients and exports CSVs to `runs/temporal_encoding/`. The existing [temporal_encoding/](temporal_encoding/) files are historical exports from the 15-minute seed-7 model, not complete model weights.
 
-The existing [temporal_encoding/](temporal_encoding/) CSVs are small historical exports from the 15-minute seed-7 model. They are provided for interpretation; they do not contain the complete model weights.
+## Limitations
 
-## Data and reproducibility
+The final study covers one benchmark and a weekday-only calendar. The time encoding is shared by every sensor, so it does not model sensor-specific timing shifts. Cross-dataset evaluation and node-specific temporal features are directions for further work. The thesis also compares with published STGCN results; that comparison is not a matched rerun under this final training recipe.
 
-`data/pemsd7-m/` contains the speed matrix `vel.csv` and the fixed adjacency `adj.npz` for 228 sensors. The benchmark records five-minute speeds on weekdays in May-June 2012. The dataset was obtained through the [original STGCN data distribution](https://github.com/VeritasYin/STGCN_IJCAI-18/blob/master/data_loader/PeMS-M.zip) and carried forward from the reference implementation. The code license does not establish separate licensing terms for third-party data.
+The historical pipeline has CSV-header and window-boundary quirks, and the cleaned implementation consumes random numbers differently from the original notebooks. See the [reproduction notes](results/README.md#reproducing-the-historical-runs) before trying to reproduce an exact metric row.
 
-The existing research loader uses pandas' default CSV-header handling: the first numeric row is consumed as column names, leaving 12,671 observations and split lengths 8,871/1,900/1,900. Temporal indices start at zero for the first retained row, producing a five-minute offset relative to the raw-file calendar assumption. The window builder also omits the last otherwise valid window. These inherited behaviors are retained to preserve the historical pipeline; changing them requires a new experiment.
-
-The cleaned implementation constructs the reparameterized modules directly. The original research notebooks constructed ordinary Time2Vec modules before replacing them and performed an additional evaluation pass over the shuffled training loader each epoch. Those procedures consume random numbers differently, so a new run with the same seed is not guaranteed to reproduce the exact historical weights or metric row. Dependency versions are lower bounds, not an exact environment lock.
-
-Only PeMSD7-M was evaluated in the final thesis. Calendar settings for METR-LA and PeMS-BAY remain available, but their datasets are not bundled here.
-
-## Repository layout
+## Files
 
 ```text
-main.py                       Train and evaluate the final model
-model/                        STGCN backbone and reparameterized Time2Vec
-script/                       Data loading, graph operators, metrics, checkpointing
-data/pemsd7-m/                Benchmark speeds and fixed adjacency
-results/                      Historical per-seed and capacity result tables
-make_dashboard.py             Build a dashboard from locally trained weights
-inspect_temporal.py           Inspect locally trained encoding parameters
-dashboard/                    Saved offline demonstration
-temporal_encoding/            Historical encoding-parameter exports
-requirements.txt              Dependencies
-LICENSE                       Upstream LGPL 2.1 license text
-NOTICE.md                     Attribution and description of modifications
+main.py                 Training and evaluation
+model/                  STGCN layers and Time2Vec encoding
+script/                 Data loading, graph operators, metrics, early stopping
+data/pemsd7-m/          Speed matrix and fixed adjacency
+results/                Original result tables and reproduction notes
+assets/figures/         Figures from the thesis and presentation
+temporal_encoding/      Historical encoding-parameter exports
+inspect_temporal.py     Temporal-parameter inspection tool
+requirements.txt        Python dependencies
 ```
 
-## Attribution
+## Credits
 
-The STGCN backbone and data-loading code are derived from [hazdzz/STGCN](https://github.com/hazdzz/STGCN), implementing the work of Bing Yu, Haoteng Yin, and Zhanxing Zhu. This HND research adds the harmonic-seeded, reparameterized daily/weekly Time2Vec encoding and the accompanying training configuration and analysis utilities.
+The STGCN backbone, graph operators, and data-loading code are adapted from [hazdzz/STGCN](https://github.com/hazdzz/STGCN), whose [upstream license is LGPL 2.1](https://github.com/hazdzz/STGCN/blob/main/LICENSE). My research adds the daily/weekly Time2Vec encoding, harmonic initialization, frequency reparameterization, training configuration, and analysis utilities.
 
 - Yu, Yin, and Zhu, [Spatio-Temporal Graph Convolutional Networks: A Deep Learning Framework for Traffic Forecasting](https://arxiv.org/abs/1709.04875), IJCAI 2018.
 - Kazemi et al., [Time2Vec: Learning a Vector Representation of Time](https://arxiv.org/abs/1907.05321), 2019.
-
-See [NOTICE.md](NOTICE.md) for provenance and [LICENSE](LICENSE) for the upstream GNU Lesser General Public License, version 2.1.
+- PeMSD7-M data was carried forward from the reference implementation and the [original STGCN data distribution](https://github.com/VeritasYin/STGCN_IJCAI-18/blob/master/data_loader/PeMS-M.zip). The upstream software license does not establish separate licensing terms for the dataset.
