@@ -1,6 +1,6 @@
 # STGCN + Time2Vec for Traffic Forecasting
 
-This is my HND Data Science research project: **A Time2Vec Temporal Encoding for Multi-Horizon Traffic Forecasting with Spatio-Temporal Graph Neural Networks**.
+**A Time2Vec Temporal Encoding for Multi-Horizon Traffic Forecasting with Spatio-Temporal Graph Neural Networks**.
 
 I explored how daily and weekly time information could help an STGCN predict traffic speeds. The final model takes the previous **60 minutes** of speeds from **228 road sensors** and predicts the speed at each sensor **15, 30, or 45 minutes ahead**.
 
