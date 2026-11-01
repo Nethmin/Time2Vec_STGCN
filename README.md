@@ -36,7 +36,7 @@ My contribution is a pair of continuous Time2Vec encodings for the time of day a
 For a normalized time value $\tau$, each stream produces:
 
 $$
-\operatorname{Time2Vec}(\tau) = [w_0\tau + b_0,\; \sin(\omega_1\tau + \phi_1),\; \ldots,\; \sin(\omega_5\tau + \phi_5)]
+e(\tau) = [w_0\tau + b_0,\; \sin(\omega_1\tau + \phi_1),\; \ldots,\; \sin(\omega_5\tau + \phi_5)]
 $$
 
 The daily input is `tod / 288`. The weekly input is `(dow * 288 + tod) / (5 * 288)`, because PeMSD7-M records weekdays only. Frequencies are parameterized as:
