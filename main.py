@@ -1,25 +1,7 @@
-"""Train / evaluate the FINALIZED STGCN + Time2Vec temporal model.
+"""Train and evaluate STGCN with daily and weekly Time2Vec encoding.
 
-This is the cleaned-up replication of the thesis's final model. The full
-research codebase carried many experimental flags (NMF adaptive adjacency,
-graph fusion, discrete ToD/DoW embeddings, gated fusion, multiple optimizers /
-schedulers / losses, EMA, ...). All of that is removed here. What remains is
-exactly the final recipe, with only the knobs that matter left configurable:
-
-    * --d_t2v   : Time2Vec dimension per scale = (# sine waves) + 1 linear trend
-    * --d_emb   : projected temporal-embedding width
-    * --n_pred  : forecast horizon in steps (3=15min, 6=30min, 9=45min)
-    * --seed    : RNG seed (results in the thesis are mean +/- std over seeds)
-
-Finalized recipe (defaults below):
-    dataset=pemsd7-m, n_his=12, ChebGraphConv (Ks=3, Kt=3, 2 ST-blocks, GLU),
-    temporal=Time2Vec (ReparamTime2Vec, d_t2v=6, d_emb=16), MSE loss,
-    AdamW, lr=0.004, weight_decay=1e-3, dropout=0.5, batch=256,
-    cosine LR (t_max=60) + 2-epoch warmup, grad-clip=5, no EMA.
-    Frequency params (Time2Vec log_scale) get 10x LR and no weight decay;
-    phases also get no weight decay. Model selection is by best validation loss.
-
-Result (test, PeMSD7-M, 15-min, mean +/- std over 5 seeds): MAE 2.207 +/- 0.018.
+The final recipe uses MSE, AdamW, and best-validation checkpoint selection.
+See README.md for the configuration and reported research results.
 """
 
 import argparse
@@ -42,10 +24,7 @@ from script import dataloader, utility, earlystopping
 from model import models
 
 
-# --- dataset-specific temporal calendar settings ---
-# n_tod: time-of-day slots per day (288 for 5-min intervals)
-# n_dow: distinct day-of-week values used
-# start_dow: day-of-week index of the very first row in the dataset
+# Calendar fields: slots per day, days per week, and initial day (Monday=0).
 DATASET_CFG = {
     'pemsd7-m': dict(n_tod=288, n_dow=5, start_dow=1),  # weekdays only, starts Tuesday
     'metr-la':  dict(n_tod=288, n_dow=7, start_dow=3),  # all days, starts Thursday
@@ -70,12 +49,10 @@ def get_parameters(arg_list=None):
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--dataset', type=str, default='pemsd7-m', choices=list(DATASET_CFG.keys()))
 
-    # --- problem setup ---
     parser.add_argument('--n_his', type=int, default=12, help='input window length (steps)')
     parser.add_argument('--n_pred', type=int, default=3, help='forecast horizon (steps): 3=15min, 6=30min, 9=45min')
     parser.add_argument('--time_intvl', type=int, default=5, help='minutes per step')
 
-    # --- backbone (finalized STGCN-Cheb defaults) ---
     parser.add_argument('--Kt', type=int, default=3, help='temporal kernel size')
     parser.add_argument('--Ks', type=int, default=3, choices=[2, 3], help='Chebyshev order')
     parser.add_argument('--stblock_num', type=int, default=2, help='number of ST-Conv blocks')
@@ -85,14 +62,12 @@ def get_parameters(arg_list=None):
     parser.add_argument('--enable_bias', type=bool, default=True)
     parser.add_argument('--droprate', type=float, default=0.5)
 
-    # --- temporal encoding (the thesis contribution) ---
     parser.add_argument('--temporal_emb', action=argparse.BooleanOptionalAction, default=True,
                         help='enable Time2Vec temporal encoding (use --no-temporal_emb for the baseline)')
     parser.add_argument('--d_t2v', type=int, default=6,
                         help='Time2Vec dim per scale; # sine waves = d_t2v - 1 (plus 1 linear trend)')
     parser.add_argument('--d_emb', type=int, default=16, help='projected temporal embedding width')
 
-    # --- optimization (finalized recipe) ---
     parser.add_argument('--lr', type=float, default=0.004, help='base learning rate')
     parser.add_argument('--weight_decay_rate', type=float, default=0.001, help='AdamW weight decay (L2)')
     parser.add_argument('--freq_lr_mult', type=float, default=10.0,
@@ -119,7 +94,7 @@ def get_parameters(arg_list=None):
 
     Ko = args.n_his - (args.Kt - 1) * 2 * args.stblock_num
 
-    # Channel sizes per block (bottleneck design in the ST-Conv blocks).
+    # ST-Conv blocks use a 64 -> 16 -> 64 bottleneck.
     blocks = []
     if args.temporal_emb:
         blocks.append([1 + args.d_emb])  # velocity (1) + temporal embedding channels
@@ -208,10 +183,7 @@ def prepare_model(args, blocks, n_vertex, device):
     model = models.STGCNChebGraphConv(args, blocks, n_vertex).to(device)
     report_params(model)
 
-    # Parameter groups:
-    #   freq  -> Time2Vec frequencies (log_scale): higher LR, no weight decay
-    #   no_decay -> phases: no weight decay
-    #   decay -> everything else: standard AdamW weight decay
+    # Frequencies use a higher LR; frequencies and phases are not weight-decayed.
     freq_p, no_decay_p, decay_p = [], [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:
@@ -230,7 +202,6 @@ def prepare_model(args, blocks, n_vertex, device):
     ]
     optimizer = optim.AdamW(param_groups, betas=(0.9, 0.999), eps=1e-8)
 
-    # Linear warmup -> cosine annealing
     if args.warmup_epochs > 0:
         warmup = optim.lr_scheduler.LinearLR(
             optimizer, start_factor=0.1, end_factor=1.0, total_iters=args.warmup_epochs)

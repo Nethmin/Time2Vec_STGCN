@@ -1,18 +1,4 @@
-"""Network building blocks for the finalized STGCN + Time2Vec temporal model.
-
-This is the cleaned-up replication of the thesis's final model. Only the
-components that the final model actually uses are kept:
-
-  * STGCN backbone: Align -> TemporalConvLayer (GLU) -> ChebGraphConv -> ...
-  * Temporal encoding (the thesis contribution): a learnable-frequency
-    Time2Vec (`ReparamTime2Vec`) at the daily and weekly scales, projected to
-    `d_emb` channels and concatenated to the velocity input.
-
-Everything from the research codebase that is NOT part of the final model
-(NMF adaptive adjacency + graph fusion, discrete ToD/DoW lookup embeddings,
-gated fusion, the plain non-reparameterized Time2Vec, the GraphConv/GCN
-variant) has been removed for clarity.
-"""
+"""STGCN blocks and harmonic-seeded, learnable-frequency Time2Vec encoding."""
 
 import math
 import torch
@@ -60,14 +46,7 @@ class CausalConv2d(nn.Conv2d):
 
 
 class TemporalConvLayer(nn.Module):
-    """Gated temporal convolution (GLU / GTU).
-
-           |--------------------------------| * residual connection *
-           |                                |
-           |    |--->--- causalconv2d ----- + -------|
-    -------|----|                                   (x) ------>
-                |--->--- causalconv2d --- sigmoid ---|
-    """
+    """Gated temporal convolution with an aligned residual (GLU or GTU)."""
 
     def __init__(self, Kt, c_in, c_out, n_vertex, act_func):
         super(TemporalConvLayer, self).__init__()
@@ -206,20 +185,11 @@ class OutputBlock(nn.Module):
 
 
 class ReparamTime2Vec(nn.Module):
-    """Reparameterized, learnable-frequency Time2Vec (the thesis contribution).
+    """Encode scalar time as one linear trend and out_features - 1 sinusoids.
 
-    Maps a normalized scalar time tau in [0, 1) to `out_features` features:
-        component 0      = linear trend (w0 * tau + b0)
-        components 1..k  = sin(tau * omega_i + phase_i),  k = out_features - 1
-
-    Frequencies are reparameterized as  omega_i = omega_base_i * exp(log_scale_i),
-    where omega_base is FIXED at integer harmonics 1..k cycles per period
-    (2*pi*[1..k]). With log_scale initialized to 0, the sine "waves" start exactly
-    at integer harmonics and the network learns multiplicative deviations from
-    them. `log_scale` (frequency) and `phase` are the only periodic parameters.
-
-    The number of sine waves is k = out_features - 1; `out_features` is exposed
-    as `--d_t2v` (Time2Vec dimension per scale).
+    Frequencies follow omega = omega_base * exp(log_scale), with omega_base
+    fixed at 2*pi*[1..k]. Zero initial log scales and phases seed integer
+    harmonics while allowing positive, multiplicative frequency adjustments.
     """
 
     def __init__(self, out_features=6):
@@ -260,12 +230,13 @@ class TemporalEncoding(nn.Module):
         self.projection = nn.Linear(2 * d_t2v, d_emb)
 
     def forward(self, tod_idx, dow_idx):
-        # tau_daily in [0, 1): normalized position within the day
-        tau_daily = (tod_idx.float() / self.n_tod).unsqueeze(-1)                       # [B, T, 1]
-        # tau_weekly in [0, 1): normalized position within the week
-        tau_weekly = ((dow_idx.float() * self.n_tod + tod_idx.float())
-                      / (self.n_dow * self.n_tod)).unsqueeze(-1)                       # [B, T, 1]
-        e_d = self.t2v_daily(tau_daily)                                                # [B, T, d_t2v]
-        e_w = self.t2v_weekly(tau_weekly)                                              # [B, T, d_t2v]
-        h = torch.cat([e_d, e_w], dim=-1)                                              # [B, T, 2*d_t2v]
-        return self.projection(h)                                                      # [B, T, d_emb]
+        # Normalize positions within the day and week to [0, 1).
+        tau_daily = (tod_idx.float() / self.n_tod).unsqueeze(-1)  # [B, T, 1]
+        tau_weekly = (
+            (dow_idx.float() * self.n_tod + tod_idx.float())
+            / (self.n_dow * self.n_tod)
+        ).unsqueeze(-1)  # [B, T, 1]
+        e_d = self.t2v_daily(tau_daily)  # [B, T, d_t2v]
+        e_w = self.t2v_weekly(tau_weekly)  # [B, T, d_t2v]
+        h = torch.cat([e_d, e_w], dim=-1)  # [B, T, 2*d_t2v]
+        return self.projection(h)  # [B, T, d_emb]

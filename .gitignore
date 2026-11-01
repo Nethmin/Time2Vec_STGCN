@@ -1,4 +1,16 @@
 __pycache__/
-*.pyc
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+.env.*
+.DS_Store
+Thumbs.db
+
+# Locally trained weights and generated run outputs are not distributed.
 *.pt
+*.pth
+*.ckpt
 *_history.csv
+runs/

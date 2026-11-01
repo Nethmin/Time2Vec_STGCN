@@ -1,8 +1,4 @@
-"""Finalized STGCN model: ChebGraphConv backbone + Time2Vec temporal encoding.
-
-Structure: (TGTND) x stblock_num  ->  TNFF output block.
-The temporal encoding is concatenated onto the velocity input channel.
-"""
+"""Chebyshev STGCN with Time2Vec features concatenated to the speed input."""
 
 import torch
 import torch.nn as nn
@@ -11,17 +7,9 @@ from model import layers
 
 
 class STGCNChebGraphConv(nn.Module):
-    # TGTND TGTND TNFF
-    # T: Gated Temporal Convolution Layer (GLU)
-    # G: Graph Convolution Layer (ChebGraphConv)
-    # N: Layer Normalization
-    # D: Dropout
-    # F: Fully-Connected Layer
-
     def __init__(self, args, blocks, n_vertex):
         super(STGCNChebGraphConv, self).__init__()
 
-        # Temporal encoding (optional; on for the final model, off reproduces the baseline)
         if getattr(args, 'temporal_emb', False):
             self.temporal_emb = layers.TemporalEncoding(
                 d_t2v=args.d_t2v, d_emb=args.d_emb,
@@ -50,7 +38,6 @@ class STGCNChebGraphConv(nn.Module):
             self.dropout = nn.Dropout(p=args.droprate)
 
     def forward(self, x, tod_idx=None, dow_idx=None):
-        # Inject temporal embeddings by concatenating along the channel dimension
         if self.temporal_emb is not None and tod_idx is not None:
             h_temp = self.temporal_emb(tod_idx, dow_idx)      # [B, T, d_emb]
             h_temp = h_temp.permute(0, 2, 1).unsqueeze(-1)    # [B, d_emb, T, 1]

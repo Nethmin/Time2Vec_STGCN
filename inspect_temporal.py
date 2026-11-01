@@ -1,36 +1,21 @@
-"""Extract the LEARNED temporal-encoding parameters from a trained checkpoint.
+"""Export learned Time2Vec parameters from a locally trained checkpoint.
 
-The temporal encoding is two ReparamTime2Vec modules (daily + weekly) followed
-by a linear projection. For each scale the learned quantities are:
-
-  * frequencies  -- omega = omega_base * exp(log_scale); reported as CYCLES per
-                    period (cycles/day for the daily scale, cycles/week for the
-                    weekly scale). omega_base is fixed at integer harmonics
-                    1..k, so a learned cycle near an integer means the wave
-                    stayed close to its harmonic init.
-  * phases       -- phase offset (radians) of each sine wave.
-  * linear trend -- slope (w0) and bias (b0) of the non-periodic component.
-
-The projection (2*d_t2v -> d_emb) mixes the daily+weekly features into the
-channels fed to the backbone; its matrix is saved to CSV but not pretty-printed.
+Frequencies are reported as cycles per day or five-weekday week, and phases
+in radians. Trend coefficients and projection weights are also exported.
 
 Usage:
-    python inspect_temporal.py                       # 15-min final model (dt2v6_s7)
-    python inspect_temporal.py --ckpt <path.pt>      # any checkpoint
+    python inspect_temporal.py --ckpt h15_s42.pt
 """
 
 import argparse
 import math
 import os
 
-import numpy as np
-import pandas as pd
-import torch
-
-DEFAULT_CKPT = os.path.join('..', 'stgcn_temporal', 'Final model selection', 'dt2v6_s7.pt')
-
 
 def scale_table(sd, prefix, period_name):
+    import numpy as np
+    import pandas as pd
+
     log_scale = sd[f'{prefix}.log_scale'].numpy()
     phase = sd[f'{prefix}.phase'].numpy()
     omega_base = sd[f'{prefix}.omega_base'].numpy()
@@ -51,12 +36,22 @@ def scale_table(sd, prefix, period_name):
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--ckpt', type=str, default=DEFAULT_CKPT)
-    p.add_argument('--outdir', type=str, default='temporal_encoding')
+    p = argparse.ArgumentParser(description='Inspect a locally trained Time2Vec checkpoint')
+    p.add_argument(
+        '--ckpt', type=str, required=True,
+        help='locally trained checkpoint with temporal encoding enabled')
+    p.add_argument('--outdir', type=str, default=os.path.join('runs', 'temporal_encoding'))
     args = p.parse_args()
 
-    sd = torch.load(args.ckpt, map_location='cpu')
+    if not os.path.isfile(args.ckpt):
+        p.error(f'Checkpoint not found: {args.ckpt}. '
+                'No pretrained weights are bundled; train a model with main.py first.')
+
+    import numpy as np
+    import pandas as pd
+    import torch
+
+    sd = torch.load(args.ckpt, map_location='cpu', weights_only=True)
     os.makedirs(args.outdir, exist_ok=True)
     tag = os.path.splitext(os.path.basename(args.ckpt))[0]
 
@@ -71,7 +66,6 @@ def main():
         out = os.path.join(args.outdir, f'{tag}_{period}.csv')
         df.to_csv(out, index=False)
 
-    # projection matrix (2*d_t2v -> d_emb)
     W = sd['temporal_emb.projection.weight'].numpy()
     b = sd['temporal_emb.projection.bias'].numpy()
     proj = pd.DataFrame(W, columns=[f'in_{i}' for i in range(W.shape[1])])

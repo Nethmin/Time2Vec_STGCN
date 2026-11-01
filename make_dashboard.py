@@ -1,51 +1,30 @@
-"""Build a self-contained interactive HTML dashboard of the finalized model's
-predicted-vs-actual speeds for ALL sensors, at the 15 / 30 / 45-min horizons.
+"""Build an offline sensor dashboard from one checkpoint per forecast horizon.
 
-For each horizon it loads the matching best-seed checkpoint into the clean
-finalized model, runs the held-out test set, inverse-transforms to mph, and
-writes one offline HTML file (Plotly embedded — no server, no internet needed):
-
-    dashboard/predictions_dashboard.html
-
-Controls in the page:
-    * Sensor dropdown  (all 228 sensors)
-    * Horizon toggle   (All / 15 / 30 / 45 min)
-    * A per-sensor MAE overview bar chart underneath
-
-Usage:
-    python make_dashboard.py                  # uses the seed-7 (best) checkpoints
-    python make_dashboard.py --max_hours 72   # trim the timeline shown
+Checkpoints must use d_t2v=6 and d_emb=16. See README.md for training and usage;
+the bundled dashboard can be opened without these weights.
 """
 
 import argparse
 import os
 
-import numpy as np
-import torch
-import plotly.graph_objects as go
-
-from main import get_parameters, data_preparate
-from model import models
-
-# Best-seed (s7) checkpoints from the model-selection run, one per horizon.
-FMS = os.path.join('..', 'stgcn_temporal', 'Final model selection')
-DEFAULT_CKPTS = {
-    3: os.path.join(FMS, 'dt2v6_s7.pt'),
-    6: os.path.join(FMS, '30 min horizon', 'best_h30_s7.pt'),
-    9: os.path.join(FMS, '45 minute horizon', 'best_h45_s7.pt'),
-}
 HORIZON_MIN = {3: 15, 6: 30, 9: 45}
 HORIZON_COLOR = {3: '#1f77b4', 6: '#ff7f0e', 9: '#2ca02c'}
 
 
 def run_horizon(n_pred, ckpt, seed):
     """Return (hours, actual[T,N], pred[T,N]) on the original mph scale."""
+    import numpy as np
+    import torch
+
+    from main import get_parameters, data_preparate
+    from model import models
+
     args, device, blocks = get_parameters(
         ['--n_pred', str(n_pred), '--d_t2v', '6', '--seed', str(seed), '--temporal_emb'])
     n_vertex, zscore, _, _, test_iter = data_preparate(args, device)
 
     model = models.STGCNChebGraphConv(args, blocks, n_vertex).to(device)
-    model.load_state_dict(torch.load(ckpt, map_location=device))
+    model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
     model.eval()
 
     preds, acts = [], []
@@ -66,6 +45,8 @@ def run_horizon(n_pred, ckpt, seed):
 
 def per_sensor_metrics(act, pred, mask_value=1e-5):
     """Per-sensor MAE, RMSE, MAPE(%) over the test set. Arrays are [T, N]."""
+    import numpy as np
+
     err = np.abs(act - pred)
     mae = err.mean(axis=0)
     rmse = np.sqrt((err ** 2).mean(axis=0))
@@ -77,7 +58,10 @@ def per_sensor_metrics(act, pred, mask_value=1e-5):
 
 def build_dashboard(results, n_vertex, out_path, max_hours):
     """results: {n_pred: (hours, act, pred, mae, rmse, mape)}."""
-    horizons = sorted(results.keys())  # [3, 6, 9]
+    import numpy as np
+    import plotly.graph_objects as go
+
+    horizons = sorted(results.keys())
 
     def clip(hours, arr):
         if max_hours is None:
@@ -85,9 +69,9 @@ def build_dashboard(results, n_vertex, out_path, max_hours):
         m = hours <= (hours[0] + max_hours)
         return hours[m], arr[m]
 
-    s0 = 0  # initial sensor
+    s0 = 0
 
-    # ---- traces: one actual (15-min grid) + one predicted line per horizon ----
+    # Actual observations use the 15-minute target grid.
     fig = go.Figure()
     h15, a15 = clip(results[3][0], results[3][1])
     fig.add_trace(go.Scatter(
@@ -101,7 +85,6 @@ def build_dashboard(results, n_vertex, out_path, max_hours):
             name=f'Pred {HORIZON_MIN[np_]} min (MAE {mae:.2f})',
             line=dict(color=HORIZON_COLOR[np_], width=1.4)))
 
-    # ---- sensor dropdown: restyle y + legend name for all traces ----
     sensor_buttons = []
     for s in range(n_vertex):
         ys = [np.round(clip(results[3][0], results[3][1])[1][:, s], 1).tolist()]
@@ -114,7 +97,6 @@ def build_dashboard(results, n_vertex, out_path, max_hours):
             label=f'Sensor {s}', method='restyle',
             args=[{'y': ys, 'name': names}, [0, 1, 2, 3]]))
 
-    # ---- horizon visibility toggle ----
     vis = {
         'All':    [True, True, True, True],
         '15 min': [True, True, False, False],
@@ -145,7 +127,6 @@ def build_dashboard(results, n_vertex, out_path, max_hours):
         ],
     )
 
-    # ---- overview: per-sensor MAE across all sensors, grouped by horizon ----
     overview = go.Figure()
     for np_ in horizons:
         overview.add_trace(go.Bar(
@@ -158,8 +139,7 @@ def build_dashboard(results, n_vertex, out_path, max_hours):
         xaxis_title='Sensor index', yaxis_title='MAE (mph)',
         barmode='group', template='plotly_white', margin=dict(t=70))
 
-    # ---- write both figures into one offline HTML ----
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     html_main = fig.to_html(full_html=False, include_plotlyjs=True, div_id='ts')
     html_over = overview.to_html(full_html=False, include_plotlyjs=False, div_id='ov')
     with open(out_path, 'w', encoding='utf-8') as f:
@@ -179,16 +159,31 @@ def build_dashboard(results, n_vertex, out_path, max_hours):
 
 def main():
     p = argparse.ArgumentParser(description='Build the prediction dashboard')
-    p.add_argument('--seed', type=int, default=7, help='seed of the checkpoints to load (best=7)')
-    p.add_argument('--ckpt15', type=str, default=DEFAULT_CKPTS[3])
-    p.add_argument('--ckpt30', type=str, default=DEFAULT_CKPTS[6])
-    p.add_argument('--ckpt45', type=str, default=DEFAULT_CKPTS[9])
+    p.add_argument('--seed', type=int, default=42, help='random seed for model setup')
+    p.add_argument(
+        '--ckpt15', type=str, required=True,
+        help='locally trained 15-minute checkpoint (d_t2v=6, d_emb=16)')
+    p.add_argument(
+        '--ckpt30', type=str, required=True,
+        help='locally trained 30-minute checkpoint (d_t2v=6, d_emb=16)')
+    p.add_argument(
+        '--ckpt45', type=str, required=True,
+        help='locally trained 45-minute checkpoint (d_t2v=6, d_emb=16)')
     p.add_argument('--max_hours', type=float, default=None,
                    help='trim the timeline shown (e.g. 72 = first 3 days); default = full test set')
-    p.add_argument('--out', type=str, default=os.path.join('dashboard', 'predictions_dashboard.html'))
+    p.add_argument('--out', type=str, default=os.path.join('runs', 'predictions_dashboard.html'))
     args = p.parse_args()
 
     ckpts = {3: args.ckpt15, 6: args.ckpt30, 9: args.ckpt45}
+    for horizon, ckpt in ckpts.items():
+        if not os.path.isfile(ckpt):
+            p.error(f'{HORIZON_MIN[horizon]}-minute checkpoint not found: {ckpt}. '
+                    'No pretrained weights are bundled; train this horizon with main.py first.')
+    if args.max_hours is not None and args.max_hours <= 0:
+        p.error('--max_hours must be positive')
+
+    import numpy as np
+
     results = {}
     n_vertex = None
     for n_pred, ck in ckpts.items():
@@ -197,7 +192,8 @@ def main():
         mae, rmse, mape = per_sensor_metrics(act, pred)
         results[n_pred] = (hours, act, pred, mae, rmse, mape)
         n_vertex = act.shape[1]
-        print(f'  overall: MAE {mae.mean():.3f} | RMSE {rmse.mean():.3f} | MAPE {mape.mean():.2f}%')
+        pooled_rmse = np.sqrt(np.mean((act - pred) ** 2))
+        print(f'  overall: MAE {mae.mean():.3f} | RMSE {pooled_rmse:.3f} | MAPE {mape.mean():.2f}%')
 
     overall = build_dashboard(results, n_vertex, args.out, args.max_hours)
     size_mb = os.path.getsize(args.out) / 1e6
